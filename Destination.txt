@@ -1,0 +1,464 @@
+Full Stack Coding Assignment: Real-Time
+Collaborative To-Do Board
+Objective
+Build a web-based collaborative to-do board application where multiple users can log in, manage
+tasks, and see changes happen in real time—similar to a minimal Trello board but with live sync
+and some custom business logic.
+Assignment Brief
+1. Backend (Node.js/Express + MongoDB or PHP + MySQL)
+• User Registration & Login:
+Secure sign-up/login with hashed passwords and JWT-based authentication.
+• Task API:
+Tasks have title, description, assigned user, status (Todo, In Progress, Done), and priority.
+• Real-Time Sync:
+Implement real-time updates using WebSockets (e.g., Socket.IO for Node.js) so all users see
+changes instantly.
+• Action Logging:
+Every change (add/edit/delete/assign/drag-drop) should be logged with who did what, when.
+Expose a REST API to fetch the last 20 actions.
+• Conflict Handling:
+If two users edit the same task at the same time, detect the conflict and prompt both users to
+resolve (see details below).
+2. Frontend (React, no UI template libraries)
+• Login/Register Pages:
+Custom-built forms (do not use Bootstrap or any form generator).
+• Kanban Board:
+Three columns: Todo, In Progress, Done.
+Tasks can be dragged and dropped between columns and reassigned to any user.
+• Activity Log Panel:
+Shows last 20 actions; updates live.
+• Unique UI:
+Custom styling only—no third-party CSS frameworks.
+• Animations:
+At least one custom animation (e.g., card flip, smooth drag-drop, etc.).
+• Responsiveness:
+The app should work well on both desktop and mobile screens.
+3. Unique Logic Challenges
+• Smart Assign:
+Add a “Smart Assign” button—when clicked on a task, it assigns the task to the user with
+the fewest current active tasks. You must implement this logic yourself.
+• Conflict Handling:
+If two users edit the same task at the same time, show both versions and let users choose to
+“merge” or “overwrite.”
+• Validation:
+Task titles must be unique per board, and must not match column names.
+Submission & Deployment Instructions
+1. GitHub Repository
+◦ Create a public GitHub repository for your project.
+◦ Make regular, meaningful commits showing your work and progress.
+◦ Include a detailed README.md with:
+▪ Project overview
+▪ Tech stack used
+▪ Setup and installation instructions (how to run both backend and frontend
+locally)
+▪ Features list and usage guide
+▪ Explanations for your Smart Assign and Conflict Handling logic
+▪ Link to your deployed live app and demo video
+2. Live Deployment
+◦ Deploy both backend and frontend to a free hosting service.
+▪ Frontend: Vercel, Netlify, or similar
+▪ Backend: Render, Railway, Cyclic, Heroku, or similar (Node.js/MongoDB
+recommended)
+◦ Make sure your deployed app is accessible and works for demonstration.
+◦ Include all necessary environment variable setup instructions in your README (do
+not share secrets or private keys).
+3. Demo Video
+◦ Record a 5–10 minute screen recording with voiceover (Loom, Zoom, OBS, or
+similar tools are fine).
+▪ Brief intro to your project and tech stack
+▪ Show login/register, Kanban features, real-time sync, Smart Assign, and
+conflict resolution
+▪ Highlight your favorite part or the most challenging part
+◦ Upload your video to Google Drive, YouTube (unlisted), Loom, or any accessible
+platform.
+◦ Include the video link in your README.
+4. Logic Document
+◦ Create a 1-page PDF or Markdown file titled Logic_Document.pdf or
+Logic_Document.md explaining:
+▪ How you implemented Smart Assign (in your own words, not code)
+▪ How your conflict handling works, with examples if possible
+5. Final Submission
+◦ Submit the following via the Internshala portal (in the assignment submission
+section):
+▪ The GitHub repository link
+▪ The deployed app URL
+▪ The demo video link
+▪ The logic document (uploaded as PDF/Markdown, or a link to it in your
+repo)
+◦ Make sure all links are accessible and permissions are set for viewing.
+Deadline
+Submit all requirements on the Internshala portal by:
+11:59 PM IST, 7 days from the date you receive this assignment
+
+# Detailed Roadmap for Converting Tender Management to Collaborative To-Do Board
+Based on your requirements, I'll create a roadmap that:
+
+- Keeps PostgreSQL and Supabase storage
+- Doesn't implement JWT authentication
+- Retains Tailwind CSS for now
+- Skips password hashing
+- Reuses existing code as much as possible
+## Phase 1: Database Schema Modifications
+### Task 1.1: Modify Database Tables
+- Reuse : Keep users table with minimal changes
+- Modify : Rename companies table to boards with schema:
+  ```
+  CREATE TABLE IF NOT EXISTS boards (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    owner_user_id INTEGER,
+    created_at TIMESTAMP DEFAULT 
+    CURRENT_TIMESTAMP,
+    FOREIGN KEY (owner_user_id) 
+    REFERENCES users(id)
+  );
+  ```
+- Modify : Rename applications table to tasks with schema:
+  ```
+  CREATE TABLE IF NOT EXISTS tasks (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    status VARCHAR(20) CHECK (status 
+    IN ('Todo', 'In Progress', 
+    'Done')) DEFAULT 'Todo',
+    priority VARCHAR(20) CHECK 
+    (priority IN ('Low', 'Medium', 
+    'High')) DEFAULT 'Medium',
+    assigned_user_id INTEGER,
+    board_id INTEGER NOT NULL,
+    created_by_id INTEGER NOT NULL,
+    version INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT 
+    CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT 
+    CURRENT_TIMESTAMP,
+    FOREIGN KEY (assigned_user_id) 
+    REFERENCES users(id),
+    FOREIGN KEY (board_id) REFERENCES 
+    boards(id),
+    FOREIGN KEY (created_by_id) 
+    REFERENCES users(id)
+  );
+  ```
+- Create : New action_logs table:
+  ```
+  CREATE TABLE IF NOT EXISTS 
+  action_logs (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    action_type VARCHAR(50) NOT NULL,
+    previous_value JSONB,
+    new_value JSONB,
+    created_at TIMESTAMP DEFAULT 
+    CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES 
+    tasks(id),
+    FOREIGN KEY (user_id) REFERENCES 
+    users(id)
+  );
+  ```
+- Create : New task_conflicts table:
+  ```
+  CREATE TABLE IF NOT EXISTS 
+  task_conflicts (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    server_version JSONB NOT NULL,
+    client_version JSONB NOT NULL,
+    resolved BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT 
+    CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES 
+    tasks(id),
+    FOREIGN KEY (user_id) REFERENCES 
+    users(id)
+  );
+  ```
+### Task 1.2: Update Database Initialization Script
+- Modify initController.js to create the new tables
+- Update sample data insertion to include tasks and boards
+- Keep the existing database connection configuration
+## Phase 2: Backend API Development
+### Task 2.1: Create Task Controllers
+- Create : taskController.js with functions:
+  - getAllTasks - Get all tasks for a board
+  - getTaskById - Get a specific task
+  - createTask - Create a new task
+  - updateTask - Update a task with conflict detection
+  - deleteTask - Delete a task
+  - updateTaskStatus - Update task status (for drag-drop)
+  - assignTask - Assign a task to a user
+  - smartAssign - Smart assign logic
+### Task 2.2: Create Board Controllers
+- Create : boardController.js with functions:
+  - getAllBoards - Get all boards
+  - getBoardById - Get a specific board with its tasks
+  - createBoard - Create a new board
+  - updateBoard - Update a board
+  - deleteBoard - Delete a board
+### Task 2.3: Create Action Log Controllers
+- Create : logController.js with functions:
+  - logAction - Log an action (internal function)
+  - getRecentLogs - Get the 20 most recent logs
+### Task 2.4: Create Conflict Resolution Controllers
+- Create : conflictController.js with functions:
+  - getConflicts - Get conflicts for a user
+  - resolveConflict - Resolve a conflict (merge/overwrite)
+### Task 2.5: Set Up API Routes
+- Modify : Update existing routes in server.js
+- Create : New route files:
+  - taskRoutes.js - Routes for task operations
+  - boardRoutes.js - Routes for board operations
+  - logRoutes.js - Routes for action logs
+  - conflictRoutes.js - Routes for conflict resolution
+## Phase 3: Real-Time Functionality
+### Task 3.1: Set Up WebSockets
+- Install : Socket.IO package
+- Modify : server.js to initialize Socket.IO
+- Create : socketController.js to handle WebSocket events
+### Task 3.2: Implement Real-Time Events
+- Create : Socket event handlers for:
+  - Task creation
+  - Task updates
+  - Task deletion
+  - Task assignment
+  - Status changes
+  - Conflict detection
+### Task 3.3: Integrate WebSockets with Controllers
+- Modify controllers to emit socket events after database operations
+- Implement room-based communication for board-specific updates
+## Phase 4: Frontend Development
+### Task 4.1: Create Kanban Board Components
+- Create : KanbanBoard.jsx - Main board component
+- Create : TaskColumn.jsx - Column for each status
+- Create : TaskCard.jsx - Individual task card
+- Create : TaskForm.jsx - Form for creating/editing tasks
+### Task 4.2: Implement Drag and Drop
+- Create : Custom drag-and-drop functionality
+- Implement : Status updates on drop
+- Add : Visual feedback during drag operations
+### Task 4.3: Create Activity Log Panel
+- Create : ActivityLog.jsx - Real-time activity log
+- Implement : WebSocket connection for live updates
+- Style : Custom styling for the log panel
+### Task 4.4: Implement Smart Assign
+- Create : Smart assign button component
+- Implement : API call to smart assign endpoint
+- Add : Visual feedback for assignment
+### Task 4.5: Create Conflict Resolution UI
+- Create : ConflictModal.jsx - Modal for resolving conflicts
+- Implement : Merge and overwrite options
+- Style : Clear visual differentiation between versions
+### Task 4.6: Update Authentication Components
+- Modify : Existing login/register forms
+- Update : User profile components
+- Implement : Role-based access control
+## Phase 5: Integration and Testing
+### Task 5.1: Connect Frontend to Backend
+- Create : API service files for new endpoints
+- Update : Existing API services
+- Implement : Error handling and loading states
+### Task 5.2: Implement WebSocket Client
+- Create : Socket.IO client connection
+- Implement : Event listeners for real-time updates
+- Add : Reconnection logic
+### Task 5.3: Test Core Functionality
+- Test user authentication
+- Test CRUD operations for tasks and boards
+- Test real-time updates
+- Test drag-and-drop functionality
+- Test smart assign
+- Test conflict detection and resolution
+### Task 5.4: Mobile Responsiveness
+- Test and adjust layouts for mobile devices
+- Implement mobile-specific interactions
+- Ensure touch support for drag-and-drop
+## Phase 6: Deployment and Documentation
+### Task 6.1: Prepare for Deployment
+- Update environment variables
+- Configure CORS for production
+- Optimize build process
+### Task 6.2: Create Documentation
+- Update README.md with new features
+- Create Logic_Document.md explaining Smart Assign and Conflict Handling
+- Document API endpoints
+### Task 6.3: Record Demo Video
+- Create 5-10 minute demo video
+- Showcase key features
+- Explain technical implementation
+## Implementation Timeline
+Phase Estimated Duration Phase 1: Database Schema Modifications 1 day Phase 2: Backend API Development 2 days Phase 3: Real-Time Functionality 1 day Phase 4: Frontend Development 2 days Phase 5: Integration and Testing 1 day Phase 6: Deployment and Documentation 0.5 day Total 7.5 days
+
+## Reused Components
+1. Database Connection : Reuse existing PostgreSQL connection
+2. User Authentication : Modify existing auth system
+3. UI Components : Reuse and adapt existing React components
+4. API Structure : Follow similar pattern to existing API
+5. Styling : Keep Tailwind CSS implementation
+6. File Storage : Continue using Supabase for any file uploads
+
+With these implementations, I've completed Task 1 (Database Schema Modifications) and Task 2 (Backend API Development) for the Real-Time Collaborative To-Do Board application. The code includes:
+
+1. Updated database schema with renamed tables and new tables for action logs and conflict handling
+2. Migration logic to preserve existing data
+3. Sample data for the new schema
+4. Task controller with all required functions including Smart Assign
+5. Board controller with all required functions
+These changes provide the foundation for the real-time collaborative features that will be implemented in subsequent tasks.
+(       Store Listings
+        <div className="bg-white rounded-xl shadow-lg p-6 animate-fade-in">
+          <div className="flex items-center space-x-3 mb-6">
+            <Store className="w-6 h-6 text-purple-600" />
+            <h2 className="text-xl font-semibold text-gray-900">Company Listings</h2>
+          </div>
+
+          {/* Search Form */}
+          <form onSubmit={handleSearch} className="mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Search by Name</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                  <input
+                    type="text"
+                    value={searchName}
+                    onChange={(e) => setSearchName(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300"
+                    placeholder="Enter company name"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Search by Address</label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                  <input
+                    type="text"
+                    value={searchAddress}
+                    onChange={(e) => setSearchAddress(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300"
+                    placeholder="Enter company address"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg font-medium hover:from-purple-700 hover:to-blue-700 transition-all duration-200 transform hover:scale-105"
+            >
+              <Search className="w-4 h-4 mr-2 inline" />
+              Search Companies
+            </button>
+          </form>
+
+          {/* Loading State */}
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-600"></div>
+              <span className="ml-3 text-gray-600">Loading companies...</span>
+            </div>
+          ) : stores.length === 0 ? (
+            <div className="text-center py-12">
+              <Store className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500 text-lg">No companies found.</p>
+              <p className="text-gray-400">Try adjusting your search criteria.</p>
+            </div>
+          ) : (
+            /* Companies Grid */
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+              {stores.map((store, index) => (
+                <div
+                  key={store.id}
+                  className="bg-gradient-to-br from-white to-gray-50 rounded-lg border border-gray-200 p-6 hover:shadow-lg transition-all duration-300 transform hover:-translate-y-1 animate-fade-in"
+                  style={{ animationDelay: `${index * 0.1}s` }}
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex-1">
+                      <h3 className="text-lg font-semibold text-gray-900 mb-1">{store.name}</h3>
+                      <div className="flex items-center text-gray-600 mb-2">
+                        <MapPin className="w-4 h-4 mr-1" />
+                        <span className="text-sm">{store.address}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700">Overall Rating</span>
+                      <div className="flex items-center space-x-2">
+                        <div className="flex items-center space-x-1">
+                          {renderStars(Number.parseFloat(store.averageRating))}
+                        </div>
+                        <span className="text-sm font-medium text-gray-900">
+                          {Number.parseFloat(store.averageRating).toFixed(1)}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700">Your Application</span>
+                      <div className="flex items-center space-x-2">
+                        {store.userRating ? (
+                          <>
+                            <div className="flex items-center space-x-1">
+                              {renderStars(Number.parseFloat(store.userRating))}
+                            </div>
+                            <span className="text-sm font-medium text-purple-600">
+                              {Number.parseFloat(store.userRating).toFixed(1)}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-sm text-gray-500">Not applied</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-gray-200">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Apply to this company</label>
+                      <select
+                        value={store.userRating || ""}
+                        onChange={(e) => handleRatingChange(store.id, e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300"
+                      >
+                        <option value="">Select Rating</option>
+                        <option value="1">⭐ 1 - Poor</option>
+                        <option value="2">⭐⭐ 2 - Fair</option>
+                        <option value="3">⭐⭐⭐ 3 - Good</option>
+                        <option value="4">⭐⭐⭐⭐ 4 - Very Good</option>
+                        <option value="5">⭐⭐⭐⭐⭐ 5 - Excellent</option>
+                      </select>
+                      
+                      <label className="block text-sm font-medium text-gray-700 mb-2 mt-3">Your Proposal</label>
+                      <textarea
+                        value={storeProposals[store.id] || store.userProposal || ""}
+                        onChange={(e) => handleProposalChange(store.id, e.target.value)}
+                        placeholder="Enter your proposal here..."
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all duration-300"
+                        rows="3"
+                      />
+                      <button
+                        onClick={() => handleProposalSubmit(store.id)}
+                        className="mt-3 w-full px-4 py-2 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg font-medium hover:from-green-600 hover:to-green-700 transition-all duration-200 transform hover:scale-105"
+                        disabled={!storeProposals[store.id] && !store.userProposal}
+                      >
+                        {store.userProposal ? "Update Proposal" : "Submit Proposal"}
+                      </button>
+
+                      {/* Add notification display */}
+                      {proposalNotification && proposalNotification.storeId === store.id && (
+                        <div className={`mt-3 px-4 py-2 rounded-lg text-white ${proposalNotification.type === 'success' ? 'bg-green-500' : 'bg-red-500'} animate-fade-in`}>
+                          {proposalNotification.message}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )})

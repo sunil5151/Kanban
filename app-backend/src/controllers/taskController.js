@@ -1,4 +1,4 @@
-import { pool } from '../config/dbConfig.js';
+import { supabase } from '../config/supabaseConfig.js';
 
 // Get all tasks for a specific board
 export const getAllTasks = async (req, res) => {
@@ -9,16 +9,33 @@ export const getAllTasks = async (req, res) => {
       return res.status(400).json({ error: 'Board ID is required' });
     }
     
-    const { rows: tasks } = await pool.query(
-      `SELECT t.*, u.name as assigned_user_name 
-       FROM tasks t
-       LEFT JOIN users u ON t.assigned_user_id = u.id
-       WHERE t.board_id = $1
-       ORDER BY t.created_at DESC`,
-      [boardId]
-    );
+    const { data: tasks, error } = await supabase
+      .from('tasks')
+      .select(`
+        *,
+        users!assigned_user_id(name)
+      `)
+      .eq('board_id', boardId)
+      .order('created_at', { ascending: false });
     
-    res.json(tasks);
+    if (error) {
+      console.error('Error fetching tasks:', error);
+      return res.status(500).json({ error: 'Failed to fetch tasks' });
+    }
+    
+    // Format tasks to match original structure
+    const formattedTasks = tasks.map(task => ({
+      ...task,
+      assigned_user_name: task.users ? task.users.name : null
+    }));
+    
+    // Remove nested users object
+    const cleanedTasks = formattedTasks.map(task => {
+      const { users, ...cleanTask } = task;
+      return cleanTask;
+    });
+    
+    res.json(cleanedTasks);
   } catch (err) {
     console.error('Error fetching tasks:', err);
     res.status(500).json({ error: 'Failed to fetch tasks' });
@@ -34,20 +51,36 @@ export const getTaskById = async (req, res) => {
       return res.status(400).json({ error: 'Task ID is required' });
     }
     
-    const { rows: tasks } = await pool.query(
-      `SELECT t.*, u.name as assigned_user_name, c.name as creator_name 
-       FROM tasks t
-       LEFT JOIN users u ON t.assigned_user_id = u.id
-       LEFT JOIN users c ON t.created_by_id = c.id
-       WHERE t.id = $1`,
-      [taskId]
-    );
+    const { data: tasks, error } = await supabase
+      .from('tasks')
+      .select(`
+        *,
+        assigned_user:users!assigned_user_id(name),
+        creator:users!created_by_id(name)
+      `)
+      .eq('id', taskId);
+    
+    if (error) {
+      console.error('Error fetching task:', error);
+      return res.status(500).json({ error: 'Failed to fetch task' });
+    }
     
     if (tasks.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
     }
     
-    res.json(tasks[0]);
+    // Format task to match original structure
+    const task = tasks[0];
+    const formattedTask = {
+      ...task,
+      assigned_user_name: task.assigned_user ? task.assigned_user.name : null,
+      creator_name: task.creator ? task.creator.name : null
+    };
+    
+    // Remove nested objects
+    const { assigned_user, creator, ...cleanTask } = formattedTask;
+    
+    res.json(cleanTask);
   } catch (err) {
     console.error('Error fetching task:', err);
     res.status(500).json({ error: 'Failed to fetch task' });
@@ -65,10 +98,16 @@ export const createTask = async (req, res) => {
     }
     
     // Check if title is unique for this board
-    const { rows: existingTasks } = await pool.query(
-      'SELECT * FROM tasks WHERE title = $1 AND board_id = $2',
-      [title, board_id]
-    );
+    const { data: existingTasks, error: checkError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('title', title)
+      .eq('board_id', board_id);
+    
+    if (checkError) {
+      console.error('Error checking existing tasks:', checkError);
+      return res.status(500).json({ error: 'Failed to check existing tasks' });
+    }
     
     if (existingTasks.length > 0) {
       return res.status(400).json({ error: 'Task title must be unique within a board' });
@@ -80,16 +119,27 @@ export const createTask = async (req, res) => {
     }
     
     // Insert new task
-    const { rows } = await pool.query(
-      `INSERT INTO tasks 
-       (title, description, status, priority, assigned_user_id, board_id, created_by_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
-       RETURNING *`,
-      [title, description, status || 'Todo', priority || 'Medium', assigned_user_id, board_id, created_by_id]
-    );
+    const { data: newTasks, error: insertError } = await supabase
+      .from('tasks')
+      .insert([{
+        title,
+        description,
+        status: status || 'Todo',
+        priority: priority || 'Medium',
+        assigned_user_id,
+        board_id,
+        created_by_id
+      }])
+      .select()
+      .single();
+    
+    if (insertError) {
+      console.error('Error creating task:', insertError);
+      return res.status(500).json({ error: 'Failed to create task' });
+    }
     
     // Log the action
-    await logAction(rows[0].id, created_by_id, 'create', null, {
+    await logAction(newTasks.id, created_by_id, 'create', null, {
       title,
       description,
       status: status || 'Todo',
@@ -97,7 +147,7 @@ export const createTask = async (req, res) => {
       assigned_user_id
     });
     
-    res.status(201).json(rows[0]);
+    res.status(201).json(newTasks);
   } catch (err) {
     console.error('Error creating task:', err);
     res.status(500).json({ error: 'Failed to create task' });
@@ -116,7 +166,15 @@ export const updateTask = async (req, res) => {
     }
     
     // Get current task data
-    const { rows: currentTasks } = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    const { data: currentTasks, error: fetchError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', taskId);
+    
+    if (fetchError) {
+      console.error('Error fetching current task:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch current task' });
+    }
     
     if (currentTasks.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
@@ -127,12 +185,18 @@ export const updateTask = async (req, res) => {
     // Check for conflicts if client_version is provided
     if (client_version && client_version !== currentTask.version) {
       // Create a conflict record
-      await pool.query(
-        `INSERT INTO task_conflicts 
-         (task_id, user_id, server_version, client_version) 
-         VALUES ($1, $2, $3, $4)`,
-        [taskId, user_id, JSON.stringify(currentTask), JSON.stringify(req.body)]
-      );
+      const { error: conflictError } = await supabase
+        .from('task_conflicts')
+        .insert([{
+          task_id: taskId,
+          user_id,
+          server_version: JSON.stringify(currentTask),
+          client_version: JSON.stringify(req.body)
+        }]);
+      
+      if (conflictError) {
+        console.error('Error creating conflict record:', conflictError);
+      }
       
       return res.status(409).json({
         error: 'Conflict detected',
@@ -148,67 +212,81 @@ export const updateTask = async (req, res) => {
         return res.status(400).json({ error: 'Task title cannot match column names' });
       }
       
-      const { rows: existingTasks } = await pool.query(
-        'SELECT * FROM tasks WHERE title = $1 AND board_id = $2 AND id != $3',
-        [title, currentTask.board_id, taskId]
-      );
+      const { data: existingTasks, error: titleCheckError } = await supabase
+        .from('tasks')
+        .select('*')
+        .eq('title', title)
+        .eq('board_id', currentTask.board_id)
+        .neq('id', taskId);
+      
+      if (titleCheckError) {
+        console.error('Error checking title uniqueness:', titleCheckError);
+        return res.status(500).json({ error: 'Failed to check title uniqueness' });
+      }
       
       if (existingTasks.length > 0) {
         return res.status(400).json({ error: 'Task title must be unique within a board' });
       }
     }
     
-    // Prepare update query
-    let updateFields = [];
-    let queryParams = [];
-    let paramIndex = 1;
+    // Prepare update object
+    let updateData = {};
     
     if (title !== undefined) {
-      updateFields.push(`title = $${paramIndex++}`);
-      queryParams.push(title);
+      updateData.title = title;
     }
     
     if (description !== undefined) {
-      updateFields.push(`description = $${paramIndex++}`);
-      queryParams.push(description);
+      updateData.description = description;
     }
     
     if (status !== undefined) {
-      updateFields.push(`status = $${paramIndex++}`);
-      queryParams.push(status);
+      updateData.status = status;
     }
     
     if (priority !== undefined) {
-      updateFields.push(`priority = $${paramIndex++}`);
-      queryParams.push(priority);
+      updateData.priority = priority;
     }
     
     if (assigned_user_id !== undefined) {
-      updateFields.push(`assigned_user_id = $${paramIndex++}`);
-      queryParams.push(assigned_user_id);
+      updateData.assigned_user_id = assigned_user_id;
     }
     
-    // Add version increment and updated_at timestamp
-    updateFields.push(`version = version + 1`);
-    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
-    
-    // Add task ID as the last parameter
-    queryParams.push(taskId);
-    
     // Execute update if there are fields to update
-    if (updateFields.length > 0) {
-      const { rows: updatedTasks } = await pool.query(
-        `UPDATE tasks 
-         SET ${updateFields.join(', ')} 
-         WHERE id = $${paramIndex} 
-         RETURNING *`,
-        queryParams
-      );
+    if (Object.keys(updateData).length > 0) {
+      // Use RPC to increment version and update timestamp
+      const { data: updatedTasks, error: updateError } = await supabase.rpc('update_task_with_version', {
+        task_id: taskId,
+        update_data: updateData
+      });
       
-      // Log the action
-      await logAction(taskId, user_id, 'update', currentTask, updatedTasks[0]);
-      
-      res.json(updatedTasks[0]);
+      if (updateError) {
+        // Fallback to regular update if RPC doesn't exist
+        const { data: fallbackTasks, error: fallbackError } = await supabase
+          .from('tasks')
+          .update({
+            ...updateData,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', taskId)
+          .select()
+          .single();
+        
+        if (fallbackError) {
+          console.error('Error updating task:', fallbackError);
+          return res.status(500).json({ error: 'Failed to update task' });
+        }
+        
+        // Log the action
+        await logAction(taskId, user_id, 'update', currentTask, fallbackTasks);
+        
+        res.json(fallbackTasks);
+      } else {
+        // Log the action
+        await logAction(taskId, user_id, 'update', currentTask, updatedTasks[0]);
+        
+        res.json(updatedTasks[0]);
+      }
     } else {
       res.json(currentTask);
     }
@@ -230,14 +308,30 @@ export const deleteTask = async (req, res) => {
     }
     
     // Get current task data for logging
-    const { rows: currentTasks } = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    const { data: currentTasks, error: fetchError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', taskId);
+    
+    if (fetchError) {
+      console.error('Error fetching task for deletion:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch task for deletion' });
+    }
     
     if (currentTasks.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
     }
     
     // Delete task
-    await pool.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+    const { error: deleteError } = await supabase
+      .from('tasks')
+      .delete()
+      .eq('id', taskId);
+    
+    if (deleteError) {
+      console.error('Error deleting task:', deleteError);
+      return res.status(500).json({ error: 'Failed to delete task' });
+    }
     
     // Log the action
     await logAction(taskId, user_id, 'delete', currentTasks[0], null);
@@ -261,7 +355,15 @@ export const smartAssign = async (req, res) => {
     }
     
     // Get current task data
-    const { rows: currentTasks } = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    const { data: currentTasks, error: fetchError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', taskId);
+    
+    if (fetchError) {
+      console.error('Error fetching task:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch task' });
+    }
     
     if (currentTasks.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
@@ -269,30 +371,61 @@ export const smartAssign = async (req, res) => {
     
     const currentTask = currentTasks[0];
     
-    // Find user with fewest active tasks
-    const { rows: userTaskCounts } = await pool.query(
-      `SELECT u.id, u.name, COUNT(t.id) as task_count
-       FROM users u
-       LEFT JOIN tasks t ON u.id = t.assigned_user_id AND t.status != 'Done'
-       GROUP BY u.id, u.name
-       ORDER BY task_count ASC
-       LIMIT 1`
-    );
+    // Find user with fewest active tasks using a more complex query
+    const { data: userTaskCounts, error: countError } = await supabase
+      .from('users')
+      .select(`
+        id, name,
+        tasks!assigned_user_id(id, status)
+      `)
+      .order('id');
+    
+    if (countError) {
+      console.error('Error fetching user task counts:', countError);
+      return res.status(500).json({ error: 'Failed to fetch user task counts' });
+    }
     
     if (userTaskCounts.length === 0) {
       return res.status(404).json({ error: 'No users available for assignment' });
     }
     
-    const smartAssignedUserId = userTaskCounts[0].id;
+    // Calculate task counts and find user with minimum active tasks
+    let minTaskCount = Infinity;
+    let smartAssignedUser = null;
+    
+    userTaskCounts.forEach(user => {
+      const activeTasks = user.tasks.filter(task => task.status !== 'Done');
+      const taskCount = activeTasks.length;
+      
+      if (taskCount < minTaskCount) {
+        minTaskCount = taskCount;
+        smartAssignedUser = {
+          id: user.id,
+          name: user.name,
+          task_count: taskCount
+        };
+      }
+    });
+    
+    if (!smartAssignedUser) {
+      return res.status(404).json({ error: 'No users available for assignment' });
+    }
     
     // Update task assignment
-    const { rows: updatedTasks } = await pool.query(
-      `UPDATE tasks 
-       SET assigned_user_id = $1, version = version + 1, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2 
-       RETURNING *`,
-      [smartAssignedUserId, taskId]
-    );
+    const { data: updatedTasks, error: updateError } = await supabase
+      .from('tasks')
+      .update({
+        assigned_user_id: smartAssignedUser.id,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', taskId)
+      .select()
+      .single();
+    
+    if (updateError) {
+      console.error('Error updating task assignment:', updateError);
+      return res.status(500).json({ error: 'Failed to update task assignment' });
+    }
     
     // Log the action
     await logAction(
@@ -300,13 +433,13 @@ export const smartAssign = async (req, res) => {
       user_id, 
       'smart_assign', 
       { assigned_user_id: currentTask.assigned_user_id }, 
-      { assigned_user_id: smartAssignedUserId }
+      { assigned_user_id: smartAssignedUser.id }
     );
     
     res.json({
-      ...updatedTasks[0],
-      assigned_user_name: userTaskCounts[0].name,
-      message: `Task smartly assigned to ${userTaskCounts[0].name} who has ${userTaskCounts[0].task_count} active tasks`
+      ...updatedTasks,
+      assigned_user_name: smartAssignedUser.name,
+      message: `Task smartly assigned to ${smartAssignedUser.name} who has ${smartAssignedUser.task_count} active tasks`
     });
   } catch (err) {
     console.error('Error smart assigning task:', err);
@@ -325,7 +458,15 @@ export const updateTaskStatus = async (req, res) => {
     }
     
     // Get current task data
-    const { rows: currentTasks } = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    const { data: currentTasks, error: fetchError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', taskId);
+    
+    if (fetchError) {
+      console.error('Error fetching task:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch task' });
+    }
     
     if (currentTasks.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
@@ -334,13 +475,20 @@ export const updateTaskStatus = async (req, res) => {
     const currentTask = currentTasks[0];
     
     // Update task status
-    const { rows: updatedTasks } = await pool.query(
-      `UPDATE tasks 
-       SET status = $1, version = version + 1, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2 
-       RETURNING *`,
-      [status, taskId]
-    );
+    const { data: updatedTasks, error: updateError } = await supabase
+      .from('tasks')
+      .update({
+        status,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', taskId)
+      .select()
+      .single();
+    
+    if (updateError) {
+      console.error('Error updating task status:', updateError);
+      return res.status(500).json({ error: 'Failed to update task status' });
+    }
     
     // Log the action
     await logAction(
@@ -351,7 +499,7 @@ export const updateTaskStatus = async (req, res) => {
       { status }
     );
     
-    res.json(updatedTasks[0]);
+    res.json(updatedTasks);
   } catch (err) {
     console.error('Error updating task status:', err);
     res.status(500).json({ error: 'Failed to update task status' });
@@ -369,7 +517,15 @@ export const assignTask = async (req, res) => {
     }
     
     // Get current task data
-    const { rows: currentTasks } = await pool.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
+    const { data: currentTasks, error: fetchError } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', taskId);
+    
+    if (fetchError) {
+      console.error('Error fetching task:', fetchError);
+      return res.status(500).json({ error: 'Failed to fetch task' });
+    }
     
     if (currentTasks.length === 0) {
       return res.status(404).json({ error: 'Task not found' });
@@ -378,20 +534,35 @@ export const assignTask = async (req, res) => {
     const currentTask = currentTasks[0];
     
     // Get user data to include name in response
-    const { rows: users } = await pool.query('SELECT id, name FROM users WHERE id = $1', [userId]);
+    const { data: users, error: userError } = await supabase
+      .from('users')
+      .select('id, name')
+      .eq('id', userId);
+    
+    if (userError) {
+      console.error('Error fetching user:', userError);
+      return res.status(500).json({ error: 'Failed to fetch user' });
+    }
     
     if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
     
     // Update task assignment
-    const { rows: updatedTasks } = await pool.query(
-      `UPDATE tasks 
-       SET assigned_user_id = $1, version = version + 1, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2 
-       RETURNING *`,
-      [userId, taskId]
-    );
+    const { data: updatedTasks, error: updateError } = await supabase
+      .from('tasks')
+      .update({
+        assigned_user_id: userId,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', taskId)
+      .select()
+      .single();
+    
+    if (updateError) {
+      console.error('Error updating task assignment:', updateError);
+      return res.status(500).json({ error: 'Failed to update task assignment' });
+    }
     
     // Log the action
     await logAction(
@@ -403,7 +574,7 @@ export const assignTask = async (req, res) => {
     );
     
     res.json({
-      ...updatedTasks[0],
+      ...updatedTasks,
       assigned_user_name: users[0].name
     });
   } catch (err) {
@@ -415,12 +586,19 @@ export const assignTask = async (req, res) => {
 // Helper function to log actions
 async function logAction(taskId, userId, actionType, previousValue, newValue) {
   try {
-    await pool.query(
-      `INSERT INTO action_logs 
-       (task_id, user_id, action_type, previous_value, new_value) 
-       VALUES ($1, $2, $3, $4, $5)`,
-      [taskId, userId, actionType, JSON.stringify(previousValue), JSON.stringify(newValue)]
-    );
+    const { error } = await supabase
+      .from('action_logs')
+      .insert([{
+        task_id: taskId,
+        user_id: userId,
+        action_type: actionType,
+        previous_value: JSON.stringify(previousValue),
+        new_value: JSON.stringify(newValue)
+      }]);
+    
+    if (error) {
+      console.error('Error logging action:', error);
+    }
   } catch (err) {
     console.error('Error logging action:', err);
   }

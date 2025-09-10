@@ -1,6 +1,5 @@
-import { pool } from '../config/dbConfig.js';
-import { validateRegistration, validateLogin, validatePasswordUpdate } from '../utils/validators.js';
 import { supabase } from '../config/supabaseConfig.js';
+import { validateRegistration, validateLogin, validatePasswordUpdate } from '../utils/validators.js';
 
 export const register = async (req, res) => {
   const { name, email, address, password, role } = req.body;
@@ -13,27 +12,42 @@ export const register = async (req, res) => {
   
   try {
     // Check if email already exists
-    const { rows: existingUsers } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const { data: existingUsers, error: checkError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email);
+    
+    if (checkError) {
+      console.error('Error checking existing user:', checkError);
+      return res.status(500).json({ error: 'Failed to check existing user' });
+    }
     
     if (existingUsers.length > 0) {
       return res.status(400).json({ error: 'Email already in use' });
     }
+    
     const sanitizedRole = role.toLowerCase().trim();
     
     // Insert new user
     // Note: Storing passwords in plaintext is insecure and should never be done in production
-    const { rows } = await pool.query(
-      'INSERT INTO users (name, email, address, password, role) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-      [name, email, address, password, sanitizedRole]
-    );
+    const { data: newUsers, error: insertError } = await supabase
+      .from('users')
+      .insert([{ name, email, address, password, role: sanitizedRole }])
+      .select('id')
+      .single();
+    
+    if (insertError) {
+      console.error('Registration error:', insertError);
+      return res.status(500).json({ error: 'Failed to register user' });
+    }
     
     // Return user info without password
-    const userId = rows[0].id;
+    const userId = newUsers.id;
     res.status(201).json({
       id: userId,
       name,
       email,
-      role
+      role: sanitizedRole
     });
   } catch (err) {
     console.error('Registration error:', err);
@@ -51,7 +65,15 @@ export const uploadProfileImage = async (req, res) => {
   
   try {
     // Check if user exists
-    const { rows: users } = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const { data: users, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId);
+    
+    if (userError) {
+      console.error('Error checking user:', userError);
+      return res.status(500).json({ error: 'Failed to check user' });
+    }
     
     if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -80,10 +102,15 @@ export const uploadProfileImage = async (req, res) => {
       .getPublicUrl(fileName);
     
     // Update user record with image URL
-    await pool.query(
-      'UPDATE users SET profile_image_url = $1 WHERE id = $2',
-      [publicUrl, userId]
-    );
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ profile_image_url: publicUrl })
+      .eq('id', userId);
+    
+    if (updateError) {
+      console.error('Error updating user profile image:', updateError);
+      return res.status(500).json({ error: 'Failed to update user profile image' });
+    }
     
     res.json({ imageUrl: publicUrl });
   } catch (err) {
@@ -97,16 +124,21 @@ export const getUserProfile = async (req, res) => {
   const { userId } = req.params;
   
   try {
-    const { rows } = await pool.query(
-      'SELECT id, name, email, role, profile_image_url FROM users WHERE id = $1',
-      [userId]
-    );
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, name, email, role, profile_image_url')
+      .eq('id', userId);
     
-    if (rows.length === 0) {
+    if (error) {
+      console.error('Get user profile error:', error);
+      return res.status(500).json({ error: 'Failed to get user profile' });
+    }
+    
+    if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    res.json(rows[0]);
+    res.json(users[0]);
   } catch (err) {
     console.error('Get user profile error:', err);
     res.status(500).json({ error: 'Failed to get user profile' });
@@ -124,7 +156,15 @@ export const login = async (req, res) => {
   
   try {
     // Find user by email
-    const { rows: users } = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email);
+    
+    if (error) {
+      console.error('Login error:', error);
+      return res.status(500).json({ error: 'Failed to login' });
+    }
     
     if (users.length === 0) {
       return res.status(400).json({ error: 'Invalid email or password' });
@@ -162,7 +202,15 @@ export const updatePassword = async (req, res) => {
   
   try {
     // Find user by ID
-    const { rows: users } = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const { data: users, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId);
+    
+    if (userError) {
+      console.error('Error finding user:', userError);
+      return res.status(500).json({ error: 'Failed to find user' });
+    }
     
     if (users.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -176,10 +224,15 @@ export const updatePassword = async (req, res) => {
     }
     
     // Update password
-    await pool.query(
-      'UPDATE users SET password = $1 WHERE id = $2',
-      [newPassword, userId]
-    );
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ password: newPassword })
+      .eq('id', userId);
+    
+    if (updateError) {
+      console.error('Password update error:', updateError);
+      return res.status(500).json({ error: 'Failed to update password' });
+    }
     
     res.json({ message: 'Password updated successfully' });
   } catch (err) {

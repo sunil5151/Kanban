@@ -1,4 +1,4 @@
-import { pool } from '../config/dbConfig.js';
+import { supabase } from '../config/supabaseConfig.js';
 import { isValidRating } from '../utils/validators.js';
 
 // Get all companies with search functionality and user's application
@@ -10,41 +10,50 @@ export const getAllStores = async (req, res) => {
       return res.status(400).json({ error: 'User ID is required' });
     }
     
-    // Build the WHERE clause for search
-    let whereClause = '';
-    const params = [userId];
-    let paramIndex = 2; // Start from $2 since $1 is already used
+    // Build query with filters
+    let query = supabase
+      .from('companies')
+      .select(`
+        id, name, address,
+        applications(rating, user_id)
+      `);
     
-    if (name && address) {
-      whereClause = `WHERE c.name ILIKE $${paramIndex++} AND c.address ILIKE $${paramIndex++}`;
-      params.push(`%${name}%`, `%${address}%`);
-    } else if (name) {
-      whereClause = `WHERE c.name ILIKE $${paramIndex++}`;
-      params.push(`%${name}%`);
-    } else if (address) {
-      whereClause = `WHERE c.address ILIKE $${paramIndex++}`;
-      params.push(`%${address}%`);
+    // Apply name filter if provided
+    if (name) {
+      query = query.ilike('name', `%${name}%`);
     }
     
-    const query = `
-      SELECT 
-        c.id, c.name, c.address, 
-        COALESCE(AVG(a.rating), 0) AS averageRating, 
-        (
-          SELECT a2.rating 
-          FROM applications a2 
-          WHERE a2.company_id = c.id AND a2.user_id = $1 
-        ) AS userRating 
-      FROM companies c 
-      LEFT JOIN applications a ON c.id = a.company_id 
-      ${whereClause}
-      GROUP BY c.id, c.name, c.address 
-      ORDER BY c.name ASC
-    `;
+    // Apply address filter if provided
+    if (address) {
+      query = query.ilike('address', `%${address}%`);
+    }
     
-    const { rows: companies } = await pool.query(query, params);
+    const { data: companies, error } = await query.order('name', { ascending: true });
     
-    res.json(companies);
+    if (error) {
+      console.error('Error fetching companies:', error);
+      return res.status(500).json({ error: 'Failed to fetch companies' });
+    }
+    
+    // Process results to match original format
+    const processedCompanies = companies.map(company => {
+      const ratings = company.applications.map(app => app.rating).filter(rating => rating != null);
+      const averageRating = ratings.length > 0 ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length : 0;
+      
+      // Find user's rating
+      const userApplication = company.applications.find(app => app.user_id == userId);
+      const userRating = userApplication ? userApplication.rating : null;
+      
+      return {
+        id: company.id,
+        name: company.name,
+        address: company.address,
+        averagerating: parseFloat(averageRating.toFixed(10)), // Match original precision
+        userrating: userRating
+      };
+    });
+    
+    res.json(processedCompanies);
   } catch (err) {
     console.error('Error fetching companies:', err);
     res.status(500).json({ error: 'Failed to fetch companies' });
@@ -70,50 +79,73 @@ export const submitRating = async (req, res) => {
     }
     
     // Check if user has already applied to this company
-    const { rows: existingApplications } = await pool.query(
-      'SELECT id FROM applications WHERE user_id = $1 AND company_id = $2',
-      [userId, companyId]
-    );
+    const { data: existingApplications, error: checkError } = await supabase
+      .from('applications')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('company_id', companyId);
+    
+    if (checkError) {
+      console.error('Error checking existing applications:', checkError);
+      return res.status(500).json({ error: 'Failed to check existing applications' });
+    }
     
     let result;
     
     if (existingApplications.length > 0) {
       // Update existing application
-      result = await pool.query(
-        'UPDATE applications SET rating = $1, proposal = $2 WHERE id = $3',
-        [rating, proposal, existingApplications[0].id]
-      );
+      const { error: updateError } = await supabase
+        .from('applications')
+        .update({ rating, proposal })
+        .eq('id', existingApplications[0].id);
+      
+      if (updateError) {
+        console.error('Error updating application:', updateError);
+        return res.status(500).json({ error: 'Failed to update application' });
+      }
     } else {
       // Insert new application
-      result = await pool.query(
-        'INSERT INTO applications (user_id, company_id, rating, proposal) VALUES ($1, $2, $3, $4)',
-        [userId, companyId, rating, proposal]
-      );
+      const { error: insertError } = await supabase
+        .from('applications')
+        .insert([{ user_id: userId, company_id: companyId, rating, proposal }]);
+      
+      if (insertError) {
+        console.error('Error creating application:', insertError);
+        return res.status(500).json({ error: 'Failed to create application' });
+      }
     }
     
     // Get updated company info with new average rating
-    const { rows: companies } = await pool.query(
-      `SELECT 
-        c.id, c.name, c.address, 
-        COALESCE(AVG(a.rating), 0) AS averageRating, 
-        (
-          SELECT a2.rating 
-          FROM applications a2 
-          WHERE a2.company_id = c.id AND a2.user_id = $1 
-        ) AS userRating,
-        (
-          SELECT a2.proposal 
-          FROM applications a2 
-          WHERE a2.company_id = c.id AND a2.user_id = $1 
-        ) AS userProposal
-      FROM companies c 
-      LEFT JOIN applications a ON c.id = a.company_id 
-      WHERE c.id = $2 
-      GROUP BY c.id, c.name, c.address`,
-      [userId, companyId]
-    );
+    const { data: updatedCompany, error: companyError } = await supabase
+      .from('companies')
+      .select(`
+        id, name, address,
+        applications(rating, user_id, proposal)
+      `)
+      .eq('id', companyId)
+      .single();
     
-    res.json(companies[0] || { message: 'Application submitted but company not found' });
+    if (companyError) {
+      console.error('Error fetching updated company:', companyError);
+      return res.status(500).json({ error: 'Failed to fetch updated company info' });
+    }
+    
+    // Calculate new average rating and get user data
+    const ratings = updatedCompany.applications.map(app => app.rating).filter(rating => rating != null);
+    const averageRating = ratings.length > 0 ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length : 0;
+    
+    const userApplication = updatedCompany.applications.find(app => app.user_id == userId);
+    
+    const responseData = {
+      id: updatedCompany.id,
+      name: updatedCompany.name,
+      address: updatedCompany.address,
+      averagerating: parseFloat(averageRating.toFixed(10)), // Match original precision
+      userrating: userApplication ? userApplication.rating : null,
+      userproposal: userApplication ? userApplication.proposal : null
+    };
+    
+    res.json(responseData);
   } catch (err) {
     console.error('Error submitting application:', err);
     res.status(500).json({ error: 'Failed to submit application' });

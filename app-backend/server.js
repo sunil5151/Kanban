@@ -6,7 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { testConnection } from './src/config/dbConfig.js';
+import { testSupabaseConnection } from './src/config/supabaseConfig.js';
 import authRoutes from './src/routes/authRoutes.js';
 import initRoutes from './src/routes/initRoutes.js';
 import adminRoutes from './src/routes/adminRoutes.js';
@@ -15,6 +15,7 @@ import taskRoutes from './src/routes/taskRoutes.js';
 import boardRoutes from './src/routes/boardRoutes.js';
 import logRoutes from './src/routes/logRoutes.js';
 import conflictRoutes from './src/routes/conflictRoutes.js';
+import lockRoutes from './src/routes/lockRoutes.js';
 import { initDatabase } from './src/controllers/initController.js';
 import { initSocketIO } from './src/controllers/socketController.js';
 
@@ -22,7 +23,7 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:5173'],
+    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:5173','*'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
@@ -35,7 +36,7 @@ initSocketIO(io);
 // Make io globally available
 global.io = io;
 app.use(cors({
-  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:5173', 'https://demo-1-pgla.onrender.com'],
+  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['http://localhost:5173', '*'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -52,15 +53,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/boards', boardRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/conflicts', conflictRoutes);
-app.use('/init', initRoutes);
-
-// Add this import
-import lockRoutes from './src/routes/lockRoutes.js';
-
-// Add this to the routes section
 app.use('/api/locks', lockRoutes);
-app.use('/api/logs', logRoutes);
-app.use('/api/conflicts', conflictRoutes);
 app.use('/init', initRoutes);
 
 // Root route
@@ -69,7 +62,7 @@ app.get('/', (req, res) => {
 });
 
 // Start server after testing DB connection
-testConnection().then(async (connected) => {
+testSupabaseConnection().then(async (connected) => {
   if (connected) {
     // Auto-initialize database on server start
     try {

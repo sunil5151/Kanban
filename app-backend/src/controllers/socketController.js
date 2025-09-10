@@ -1,5 +1,3 @@
-import { pool } from '../config/dbConfig.js';
-
 // Initialize Socket.IO
 export const initSocketIO = (io) => {
   // Middleware for authentication (optional)

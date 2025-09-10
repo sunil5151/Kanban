@@ -1,21 +1,37 @@
-import { pool } from '../config/dbConfig.js';
+import { supabase } from '../config/supabaseConfig.js';
 
 // Get all boards
 export const getAllBoards = async (req, res) => {
   try {
     // Remove the userId filtering to show all boards to everyone
-    let query = `
-      SELECT b.*, u.name as owner_name, 
-      COUNT(t.id) as task_count
-      FROM boards b
-      LEFT JOIN users u ON b.owner_user_id = u.id
-      LEFT JOIN tasks t ON b.id = t.board_id
-      GROUP BY b.id, u.name ORDER BY b.created_at DESC
-    `;
+    const { data: boards, error } = await supabase
+      .from('boards')
+      .select(`
+        *,
+        users!owner_user_id(name),
+        tasks(id)
+      `)
+      .order('created_at', { ascending: false });
     
-    const { rows: boards } = await pool.query(query);
+    if (error) {
+      console.error('Error fetching boards:', error);
+      return res.status(500).json({ error: 'Failed to fetch boards' });
+    }
     
-    res.json(boards);
+    // Format response to match original structure
+    const formattedBoards = boards.map(board => ({
+      ...board,
+      owner_name: board.users ? board.users.name : null,
+      task_count: board.tasks ? board.tasks.length : 0
+    }));
+    
+    // Remove nested objects to match original format
+    const cleanedBoards = formattedBoards.map(board => {
+      const { users, tasks, ...cleanBoard } = board;
+      return cleanBoard;
+    });
+    
+    res.json(cleanedBoards);
   } catch (err) {
     console.error('Error fetching boards:', err);
     res.status(500).json({ error: 'Failed to fetch boards' });
@@ -32,39 +48,69 @@ export const getBoardById = async (req, res) => {
     }
     
     // Get board details
-    const { rows: boards } = await pool.query(
-      `SELECT b.*, u.name as owner_name
-       FROM boards b
-       LEFT JOIN users u ON b.owner_user_id = u.id
-       WHERE b.id = $1`,
-      [boardId]
-    );
+    const { data: boards, error: boardError } = await supabase
+      .from('boards')
+      .select(`
+        *,
+        users!owner_user_id(name)
+      `)
+      .eq('id', boardId);
+    
+    if (boardError) {
+      console.error('Error fetching board:', boardError);
+      return res.status(500).json({ error: 'Failed to fetch board' });
+    }
     
     if (boards.length === 0) {
       return res.status(404).json({ error: 'Board not found' });
     }
     
     // Get tasks for this board
-    const { rows: tasks } = await pool.query(
-      `SELECT t.*, u.name as assigned_user_name
-       FROM tasks t
-       LEFT JOIN users u ON t.assigned_user_id = u.id
-       WHERE t.board_id = $1
-       ORDER BY t.created_at DESC`,
-      [boardId]
-    );
+    const { data: tasks, error: tasksError } = await supabase
+      .from('tasks')
+      .select(`
+        *,
+        users!assigned_user_id(name)
+      `)
+      .eq('board_id', boardId)
+      .order('created_at', { ascending: false });
+    
+    if (tasksError) {
+      console.error('Error fetching tasks:', tasksError);
+      return res.status(500).json({ error: 'Failed to fetch tasks' });
+    }
+    
+    // Format tasks to match original structure
+    const formattedTasks = tasks.map(task => ({
+      ...task,
+      assigned_user_name: task.users ? task.users.name : null
+    }));
+    
+    // Remove nested users object from tasks
+    const cleanedTasks = formattedTasks.map(task => {
+      const { users, ...cleanTask } = task;
+      return cleanTask;
+    });
     
     // Group tasks by status
     const tasksByStatus = {
-      'Todo': tasks.filter(task => task.status === 'Todo'),
-      'In Progress': tasks.filter(task => task.status === 'In Progress'),
-      'Done': tasks.filter(task => task.status === 'Done')
+      'Todo': cleanedTasks.filter(task => task.status === 'Todo'),
+      'In Progress': cleanedTasks.filter(task => task.status === 'In Progress'),
+      'Done': cleanedTasks.filter(task => task.status === 'Done')
     };
     
-    res.json({
-      ...boards[0],
+    // Format board response
+    const board = boards[0];
+    const responseBoard = {
+      ...board,
+      owner_name: board.users ? board.users.name : null,
       tasks: tasksByStatus
-    });
+    };
+    
+    // Remove nested users object from board
+    const { users, ...cleanBoard } = responseBoard;
+    
+    res.json(cleanBoard);
   } catch (err) {
     console.error('Error fetching board:', err);
     res.status(500).json({ error: 'Failed to fetch board' });
@@ -81,14 +127,18 @@ export const createBoard = async (req, res) => {
     }
     
     // Insert new board
-    const { rows } = await pool.query(
-      `INSERT INTO boards (name, description, owner_user_id)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [name, description, owner_user_id]
-    );
+    const { data: newBoards, error } = await supabase
+      .from('boards')
+      .insert([{ name, description, owner_user_id }])
+      .select()
+      .single();
     
-    res.status(201).json(rows[0]);
+    if (error) {
+      console.error('Error creating board:', error);
+      return res.status(500).json({ error: 'Failed to create board' });
+    }
+    
+    res.status(201).json(newBoards);
   } catch (err) {
     console.error('Error creating board:', err);
     res.status(500).json({ error: 'Failed to create board' });
@@ -106,44 +156,46 @@ export const updateBoard = async (req, res) => {
     }
     
     // Check if board exists
-    const { rows: existingBoards } = await pool.query(
-      'SELECT * FROM boards WHERE id = $1',
-      [boardId]
-    );
+    const { data: existingBoards, error: checkError } = await supabase
+      .from('boards')
+      .select('*')
+      .eq('id', boardId);
+    
+    if (checkError) {
+      console.error('Error checking board:', checkError);
+      return res.status(500).json({ error: 'Failed to check board' });
+    }
     
     if (existingBoards.length === 0) {
       return res.status(404).json({ error: 'Board not found' });
     }
     
-    // Prepare update query
-    let updateFields = [];
-    let queryParams = [];
-    let paramIndex = 1;
+    // Prepare update object
+    let updateData = {};
     
     if (name !== undefined) {
-      updateFields.push(`name = $${paramIndex++}`);
-      queryParams.push(name);
+      updateData.name = name;
     }
     
     if (description !== undefined) {
-      updateFields.push(`description = $${paramIndex++}`);
-      queryParams.push(description);
+      updateData.description = description;
     }
     
-    // Add board ID as the last parameter
-    queryParams.push(boardId);
-    
     // Execute update if there are fields to update
-    if (updateFields.length > 0) {
-      const { rows: updatedBoards } = await pool.query(
-        `UPDATE boards
-         SET ${updateFields.join(', ')}
-         WHERE id = $${paramIndex}
-         RETURNING *`,
-        queryParams
-      );
+    if (Object.keys(updateData).length > 0) {
+      const { data: updatedBoards, error: updateError } = await supabase
+        .from('boards')
+        .update(updateData)
+        .eq('id', boardId)
+        .select()
+        .single();
       
-      res.json(updatedBoards[0]);
+      if (updateError) {
+        console.error('Error updating board:', updateError);
+        return res.status(500).json({ error: 'Failed to update board' });
+      }
+      
+      res.json(updatedBoards);
     } else {
       res.json(existingBoards[0]);
     }
@@ -163,49 +215,90 @@ export const deleteBoard = async (req, res) => {
     }
     
     // Check if board exists
-    const { rows: existingBoards } = await pool.query(
-      'SELECT * FROM boards WHERE id = $1',
-      [boardId]
-    );
+    const { data: existingBoards, error: checkError } = await supabase
+      .from('boards')
+      .select('*')
+      .eq('id', boardId);
+    
+    if (checkError) {
+      console.error('Error checking board:', checkError);
+      return res.status(500).json({ error: 'Failed to check board' });
+    }
     
     if (existingBoards.length === 0) {
       return res.status(404).json({ error: 'Board not found' });
     }
     
     // Get all tasks associated with this board
-    const { rows: tasks } = await pool.query(
-      'SELECT id FROM tasks WHERE board_id = $1',
-      [boardId]
-    );
+    const { data: tasks, error: tasksError } = await supabase
+      .from('tasks')
+      .select('id')
+      .eq('board_id', boardId);
+    
+    if (tasksError) {
+      console.error('Error fetching tasks for deletion:', tasksError);
+      return res.status(500).json({ error: 'Failed to fetch tasks for deletion' });
+    }
     
     // If there are tasks, delete their action logs first
     if (tasks.length > 0) {
       const taskIds = tasks.map(task => task.id);
       
       // Delete action logs for these tasks
-      await pool.query(
-        'DELETE FROM action_logs WHERE task_id = ANY($1::int[])',
-        [taskIds]
-      );
+      const { error: logsError } = await supabase
+        .from('action_logs')
+        .delete()
+        .in('task_id', taskIds);
+      
+      if (logsError) {
+        console.error('Error deleting action logs:', logsError);
+        // Continue with deletion even if logs fail
+      }
       
       // Delete any task locks
-      await pool.query(
-        'DELETE FROM task_locks WHERE task_id = ANY($1::int[])',
-        [taskIds]
-      );
+      const { error: locksError } = await supabase
+        .from('task_locks')
+        .delete()
+        .in('task_id', taskIds);
+      
+      if (locksError) {
+        console.error('Error deleting task locks:', locksError);
+        // Continue with deletion even if locks fail
+      }
       
       // Delete any task conflicts
-      await pool.query(
-        'DELETE FROM task_conflicts WHERE task_id = ANY($1::int[])',
-        [taskIds]
-      );
+      const { error: conflictsError } = await supabase
+        .from('task_conflicts')
+        .delete()
+        .in('task_id', taskIds);
+      
+      if (conflictsError) {
+        console.error('Error deleting task conflicts:', conflictsError);
+        // Continue with deletion even if conflicts fail
+      }
     }
     
     // Now it's safe to delete the tasks
-    await pool.query('DELETE FROM tasks WHERE board_id = $1', [boardId]);
+    const { error: deleteTasksError } = await supabase
+      .from('tasks')
+      .delete()
+      .eq('board_id', boardId);
+    
+    if (deleteTasksError) {
+      console.error('Error deleting tasks:', deleteTasksError);
+      return res.status(500).json({ error: 'Failed to delete tasks' });
+    }
     
     // Delete the board
-    await pool.query('DELETE FROM boards WHERE id = $1', [boardId]);
+    const { error: deleteBoardError } = await supabase
+      .from('boards')
+      .delete()
+      .eq('id', boardId);
+    
+    if (deleteBoardError) {
+      console.error('Error deleting board:', deleteBoardError);
+      return res.status(500).json({ error: 'Failed to delete board' });
+    }
     
     res.json({ message: 'Board deleted successfully' });
   } catch (err) {

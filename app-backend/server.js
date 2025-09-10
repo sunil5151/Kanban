@@ -23,21 +23,16 @@ const app = express();
 const httpServer = createServer(app);
 
 // Configure CORS to allow all origins
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    // Allow all origins
-    return callback(null, true);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-  optionsSuccessStatus: 200 // Some legacy browsers (IE11, various SmartTVs) choke on 204
-};
+
+
 
 const io = new Server(httpServer, {
-  cors: corsOptions
+  cors: {
+    origin: ['https://kanban-tkfw.onrender.com'], // Using environment variables
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+  }
 });
 
 // Initialize Socket.IO
@@ -46,14 +41,13 @@ initSocketIO(io);
 // Make io globally available
 global.io = io;
 
-// Apply CORS middleware
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
-
 app.use(express.json());
-
+app.use(cors({
+  origin: ['https://kanban-tkfw.onrender.com'], // Using environment variables
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 const PORT = process.env.PORT || 5000;
 
 // Mount routes
